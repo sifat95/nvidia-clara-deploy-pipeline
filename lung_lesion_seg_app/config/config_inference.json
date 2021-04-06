@@ -1,0 +1,55 @@
+{
+    "batch_size": 1,
+
+    "pre_transforms": [
+        {
+            "name": "LoadNifti",
+            "args": {
+                "fields": "image"}
+        }
+    ],
+    "post_transforms": [
+        {
+            "name": "CopyProperties",
+            "args": {
+              "fields": [
+                "model"
+              ],
+              "from_field": "image",
+              "properties": [
+                "affine",
+                "original_affine",
+                "as_canonical"
+              ]
+            }
+          }
+    ],
+    "writers": [
+        {
+            "name": "WriteNifti",
+            "args": {
+                "field": "model",
+                "dtypes": "uint8",
+                "write_path": "{EVAL_OUTPUT_PATH}"
+            }
+        }
+    ],
+    "inferer":
+    {
+        "name": "custom_inference.CustomInference",
+        "args": {
+            "model_name": "segmentation_ct_lung_lesion_v1",
+            "ip": "localhost",
+            "port": 8000,
+            "protocol": "HTTP"
+        }
+    },
+
+    "model_loader":
+    {
+        "name": "TRTISModelLoader",
+        "args": {
+            "model_spec_file_name": "models/config.pbtxt"
+        }
+    }
+}
