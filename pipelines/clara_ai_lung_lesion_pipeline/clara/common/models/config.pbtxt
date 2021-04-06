@@ -1,0 +1,27 @@
+name: "segmentation_ct_lung_lesion_v1"
+platform: "pytorch_libtorch"
+max_batch_size: 1
+input [
+  {
+    name: "NV_MODEL_INPUT"
+    data_type: TYPE_FP32
+    dims: [ 1,-1,-1]
+  }
+]
+output [
+  {
+    name: "NV_MODEL_OUTPUT"
+    data_type: TYPE_FP32
+    dims: [ -1, -1, -1 ]
+  }
+]
+instance_group [
+  {
+    kind: KIND_GPU
+    count: 1
+  }
+]
+dynamic_batching {
+  preferred_batch_size: [ 4, 8 ]
+  max_queue_delay_microseconds: 100
+}

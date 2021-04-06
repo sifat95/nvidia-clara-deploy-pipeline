@@ -1,0 +1,8 @@
+{
+"model_name": "segmentation_ct_lung_lesion_v1",
+"input_node_names": ["cond/Merge"],
+"output_node_names": ["NV_OUTPUT_LABEL"],
+"data_format": "channels_first",
+"output_channel_dict": {"NV_OUTPUT_LABEL": 4},
+"network_input_size": [ 96, 96, 96]
+}

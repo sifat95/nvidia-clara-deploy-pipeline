@@ -1,0 +1,328 @@
+api-version: 0.4.0
+name: COVID-19-pipeline
+pull-secrets:
+  - ngc-clara
+operators:
+# dicom reader operator
+# Input: '/input' mapped directly to the input of the pipeline, which is populated by the DICOM Adaptor.
+# Output:'/output' for saving converted volume image in MHD format to file whose name
+#            is the same as the DICOM series instance ID.
+- name: dicom-reader
+  description: Converts DICOM instances into MHD, one file per DICOM series.
+  container:
+    image: nvcr.io/nvidia/clara/dicom-reader
+    tag: 0.7.3-2011.5
+  input:
+  - path: /input
+  output:
+  - path: /output
+# lung-segmentation operator
+# Input: `/input` containing volume image data, MHD format, with a single volume.
+# Output: `/output` containing segmented volume image, MHD format.
+#         `/publish` containing original and segmented volume images, MHD format,
+#             along with rendering configuration file.
+- name: lung-segmentation
+  description: Segmentation of lung using DL trained model.
+  container:
+     image: lung_lesion_seg_app
+     tag: latest
+  input:
+  - from: dicom-reader
+    path: /input
+  output:
+  - path: /output
+    name: segmentation
+  - path: /publish
+    name: rendering
+  services:
+  - name: triton
+  # Triton Inference Server, required by this AI application.
+    container:
+      image: nvcr.io/nvidia/tritonserver
+      tag: 20.07-v1-py3
+      command: ["tritonserver", "--model-repository=$(NVIDIA_CLARA_SERVICE_DATA_PATH)/models"]
+    # services::connections defines how the Triton service is expected to
+    # be accessed. Clara Platform supports network ("http") and
+    # volume ("file") connections.
+    connections:
+      http:
+      # The name of the connection is used to populate an environment
+      # variable inside the operator's container during execution.
+      # This AI application inside the container needs to read this variable to
+      # know the IP and port of Triton in order to connect to the service.
+      - name: NVIDIA_CLARA_TRTISURI
+        port: 8000
+      # Some services need a specialized or minimal set of hardware. In this case
+      # NVIDIA Triton Inference Server [Triton] requires at least one GPU to function.
+# dicom segmentation writer operator
+# Input1: `/input` containing a volume image file, in MHD format, name matching the DICOM series instance UID.
+# Input2: `/dcm` containing original DICOM instances, i.e. dcm file.
+# Output: `/output` containing the DICOM instances converted from the volume image, with updated attributes
+#         based on original DICOM instances.
+- name: dicom-seg-writer
+  description: Converts MHD into DICOM instance with attributes based on the original instances.
+  container:
+    image: nvcr.io/nvidia/clara/dicom-seg-writer
+    tag: 0.7.3-2011.5
+    variables:
+      NVIDIA_SEG_LABELS: '[\"Lung-seg\"]'
+  input:
+  - from: lung-segmentation
+    name: segmentation
+    path: /input
+  - path: /dcm
+  output:
+  - path: /output
+    name: dicom
+  - path: /logs
+    name: logs
+# register-volume-images-for-rendering operator
+# Input: Published original and segmented volume images, MHD format, along with rendering configuration file
+#        from the segmentation operator.
+# Output: N/A. Input data will be sent to the destination, namely `renderserver` for Render Server DataSet Service.
+- name: register-volume-images-for-rendering
+  description: Register volume images, MHD format, for rendering.
+  container:
+    image: nvcr.io/nvidia/clara/register-results
+    tag: 0.7.3-2011.5
+    command: ["python", "register.py", "--agent", "renderserver"]
+  input:
+  - from: lung-segmentation
+    name: rendering
+    path: /input
+# register-dicom-output operator
+# Input: `/input` containing DICOM instances in the named output, `dicom` from dicom-seg-writer operator.
+# Output: N/A. Input data will be sent to the destinations, namely DICOM devices, by the Clara DICOM SCU agent.
+- name: register-dicom-output
+  description: Register converted DICOM instances with Results Service to be sent to external DICOM devices.
+  container:
+    image: nvcr.io/nvidia/clara/register-results
+    tag: 0.7.3-2011.5
+    command: ["python", "register.py", "--agent", "ClaraSCU", "--data", "[\"MYPACS\"]"]
+  input:
+  - from: dicom-seg-writer
+    name: dicom
+    path: /input
+## Begin: COVID-19 Lesion
+# covid-lesion-segmentation operator
+# Input: `/input` containing volume image data, MHD format, with a single volume.
+# Output: `/output` containing segmented volume image, MHD format.
+#         `/publish` containing original and segmented volume images, MHD format,
+#             along with rendering configuration file.
+# - name: covid-lesion-segmentation
+#   description: Segmentation of COVID-19 GGO using DL trained model.
+#   container:
+#     image: nvcr.io/nvidia/clara/ai-covid-lesion
+#     tag: 0.7.3-2011.5
+#   input:
+#   - from: dicom-reader
+#     path: /input
+#   output:
+#   - path: /output
+#     name: segmentation
+#   - path: /publish
+#     name: rendering
+#   services:
+#   - name: triton
+#   # Triton Inference Server, required by this AI application.
+#     container:
+#       image: nvcr.io/nvidia/tritonserver
+#       tag: 20.07-v1-py3
+#       command: ["tritonserver", "--model-repository=$(NVIDIA_CLARA_SERVICE_DATA_PATH)/models"]
+#     # services::connections defines how the Triton service is expected to
+#     # be accessed. Clara Platform supports network ("http") and
+#     # volume ("file") connections.
+#     connections:
+#       http:
+#       # The name of the connection is used to populate an environment
+#       # variable inside the operator's container during execution.
+#       # This AI application inside the container needs to read this variable to
+#       # know the IP and port of Triton in order to connect to the service.
+#       - name: NVIDIA_CLARA_TRTISURI
+#         port: 8000
+#       # Some services need a specialized or minimal set of hardware. In this case
+#       # NVIDIA Triton Inference Server [Triton] requires at least one GPU to function.
+# # dicom covid-lesion segmentation writer operator
+# # Input1: `/input` containing a volume image file, in MHD format, name matching the DICOM series instance UID.
+# # Input2: `/dcm` containing original DICOM instances, i.e. dcm file.
+# # Output: `/output` containing the DICOM instances converted from the volume image, with updated attributes
+# #         based on original DICOM instances.
+# - name: dicom-seg-writer-covid-lesion
+#   description: Converts MHD into DICOM instance with attributes based on the original instances.
+#   container:
+#     image: nvcr.io/nvidia/clara/dicom-seg-writer
+#     tag: 0.7.3-2011.5
+#     variables:
+#       NVIDIA_SEG_LABELS: '[\"GroundGlass-seg\"]'
+#   input:
+#   - from: covid-lesion-segmentation
+#     name: segmentation
+#     path: /input
+#   - path: /dcm
+#   output:
+#   - path: /output
+#     name: dicom
+#   - path: /logs
+#     name: logs
+# # register-volume-images-for-rendering operator
+# # Input: Published original and segmented volume images, MHD format, along with rendering configuration file
+# #        from the segmentation operator.
+# # Output: N/A. Input data will be sent to the destination, namely `renderserver` for Render Server DataSet Service.
+# - name: register-covid-lesion-volume-images-for-rendering
+#   description: Register volume images, MHD format, for rendering.
+#   container:
+#     image: nvcr.io/nvidia/clara/register-results
+#     tag: 0.7.3-2011.5
+#     command: ["python", "register.py", "--agent", "renderserver"]
+#   input:
+#   - from: covid-lesion-segmentation
+#     name: rendering
+#     path: /input
+# # register-dicom-output operator
+# # Input: `/input` containing DICOM instances in the named output, `dicom` from dicom-seg-writer operator.
+# # Output: N/A. Input data will be sent to the destinations, namely DICOM devices, by the Clara DICOM SCU agent.
+# - name: register-covid-lesion-dicom-output
+#   description: Register converted DICOM instances with Results Service to be sent to external DICOM devices.
+#   container:
+#     image: nvcr.io/nvidia/clara/register-results
+#     tag: 0.7.3-2011.5
+#     command: ["python", "register.py", "--agent", "ClaraSCU", "--data", "[\"MYPACS\"]"]
+#   input:
+#   - from: dicom-seg-writer-covid-lesion
+#     name: dicom
+#     path: /input
+# ## END: COVID-19 lesion segmentation
+# # COVID-19 Classification operator
+# # Input: original image (DICOM series converted image) and segmented volume images, MHD format.
+# # Output: CSV file for classification resuls: the probabilities for both COVID-19 and non-COVID-19.
+# - name: classification-covid-19
+#   description: Classification of COVID-19 using DL model with original and segmentation images.
+#   container:
+#     image: nvcr.io/nvidia/clara/ai-covid-19
+#     tag: 0.7.3-2011.5
+#   input:
+#   - from: lung-segmentation
+#     name: segmentation
+#     path: /label_image
+#   - from: dicom-reader
+#     path: /input
+#   output:
+#   - path: /output
+#     name: classification
+#   services:
+#   - name: triton
+#   # Triton Inference Server, required by this AI application.
+#     container:
+#       image: nvcr.io/nvidia/tritonserver
+#       tag: 20.07-v1-py3
+#       command: ["tritonserver", "--model-repository=$(NVIDIA_CLARA_SERVICE_DATA_PATH)/models"]
+#     # services::connections defines how the Triton service is expected to
+#     # be accessed. Clara Platform supports network ("http") and
+#     # volume ("file") connections.
+#     connections:
+#       http:
+#       # The name of the connection is used to populate an environment
+#       # variable inside the operator's container during execution.
+#       # This AI application inside the container needs to read this variable to
+#       # know the IP and port of Triton in order to connect to the service.
+#       - name: NVIDIA_CLARA_TRTISURI
+#         port: 8000
+#       # Some services need a specialized or minimal set of hardware. In this case
+#       # NVIDIA Triton Inference Server [Triton] requires at least one GPU to function.
+# # dicom report writer operator
+# # Input1: `/input` containing a classification result file, in txt or csv format.
+# # Input2: `/dcm` containing original DICOM instances, i.e. dcm file.
+# # Output: `/output` containing the DICOM report instances converted with attributes
+# #         from the original DICOM instances.
+# - name: dicom-report-writer
+#   description: Create DICOM AI Results report, with attributes based on the original instances.
+#   container:
+#     image: nvcr.io/nvidia/clara/dicom-report-writer
+#     tag: 0.7.3-2011.5
+#     variables:
+#       NVIDIA_DICOM_REPORT_TYPE: 'pdf'
+#       NVIDIA_AI_MODEL_CREATOR: 'NVIDIA/NIH'
+#       NVIDIA_AI_MODEL_NAME: 'Clara CT Classification COVID-19'
+#       NVIDIA_AI_MODEL_VERSION: '1.0'
+#   input:
+#   - from: classification-covid-19
+#     name: classification
+#     path: /input
+#   - path: /dcm
+#   output:
+#   - path: /output
+#     name: dicom
+#   - path: /logs
+#     name: logs
+# # register-dicom-report operator
+# # Input: `/input` containing DICOM instances in the named output, `dicom` from dicom-seg-writer operator.
+# # Output: N/A. Input data will be sent to the destinations, namely DICOM devices, by the Clara DICOM SCU agent.
+# - name: register-dicom-report
+#   description: Register DICOM instances with Results Service to be sent to external DICOM devices.
+#   container:
+#     image: nvcr.io/nvidia/clara/register-results
+#     tag: 0.7.3-2011.5
+#     command: ["python", "register.py", "--agent", "ClaraSCU", "--data", "[\"MYPACS\"]"]
+#   input:
+#   - from: dicom-report-writer
+#     name: dicom
+#     path: /input
+# ## Begin: covid_lung_ratio
+# # COVID-19 Classification operator
+# # Input: COVID-19 lesion volume image and segmented lung volume images, MHD format.
+# # Output: txt file for volume ratio metrics.
+# - name: covid-lung-volume-ratio
+#   description: Classification of COVID-19 using DL model with original and segmentation images.
+#   container:
+#     image: nvcr.io/nvidia/clara/ai-volume-ratio
+#     tag: 0.7.3-2011.5
+#   input:
+#   - from: lung-segmentation
+#     name: segmentation
+#     path: /label_image
+#   - from: covid-lesion-segmentation
+#     name: segmentation
+#     path: /input
+#   output:
+#   - path: /output
+#     name: metrics
+# # dicom report writer operator
+# # Input1: `/input` containing a classification result file, in txt or csv format.
+# # Input2: `/dcm` containing original DICOM instances, i.e. dcm file.
+# # Output: `/output` containing the DICOM report instances converted with attributes
+# #         from the original DICOM instances.
+# - name: dicom-report-writer-metrics
+#   description: Create DICOM AI Results report, with attributes based on the original instances.
+#   container:
+#     image: nvcr.io/nvidia/clara/dicom-report-writer
+#     tag: 0.7.3-2011.5
+#     variables:
+#       NVIDIA_DICOM_REPORT_TYPE: 'pdf'
+#       NVIDIA_AI_MODEL_CREATOR: 'NVIDIA/NIH'
+#       NVIDIA_AI_MODEL_NAME: 'Clara COVID-19 Lung Lesion'
+#       NVIDIA_AI_MODEL_VERSION: '1.0'
+#   input:
+#   - from: covid-lung-volume-ratio
+#     name: metrics
+#     path: /input
+#   - path: /dcm
+#   output:
+#   - path: /output
+#     name: dicom
+#   - path: /logs
+#     name: logs
+# # register-dicom-report operator
+# # Input: `/input` containing DICOM instances in the named output, `dicom` from dicom-seg-writer operator.
+# # Output: N/A. Input data will be sent to the destinations, namely DICOM devices, by the Clara DICOM SCU agent.
+# - name: register-dicom-report-metrics
+#   description: Register DICOM instances with Results Service to be sent to external DICOM devices.
+#   container:
+#     image: nvcr.io/nvidia/clara/register-results
+#     tag: 0.7.3-2011.5
+#     command: ["python", "register.py", "--agent", "ClaraSCU", "--data", "[\"MYPACS\"]"]
+#   input:
+#   - from: dicom-report-writer-metrics
+#     name: dicom
+#     path: /input
+# ## End covid_lung_ratio
+
